@@ -1,0 +1,7 @@
+.env
+check_channels.py
+*.session
+*.session-journal
+*.pem
+*.ppk
+*.log
