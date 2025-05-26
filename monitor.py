@@ -97,6 +97,9 @@ bot_client = TelegramClient('bot_session', API_ID, API_HASH)
 target_entity = None
 bot_target_entity = None
 
+# 중복 전달 방지를 위한 전달된 메시지 ID 저장
+forwarded_messages = set()
+
 # 재연결 설정
 MAX_RETRIES = 5
 RETRY_DELAY = 30  # 초
@@ -198,6 +201,12 @@ async def handler(event):
         if target_entity and chat.id == target_entity.id:
             return
         
+        # 중복 메시지 확인 (chat_id와 message_id로 고유 식별)
+        message_key = (chat.id, event.message.id)
+        if message_key in forwarded_messages:
+            logger.debug(f"이미 전달된 메시지입니다. 건너뜁니다: {message_key}")
+            return
+        
         # 키워드 확인
         if not KEYWORD_PATTERN.search(event.message.text):
             return
@@ -226,6 +235,18 @@ async def handler(event):
         # 봇을 통해 원문만 전달
         await bot_client.send_message(bot_target_entity, event.message.text)
         logger.info(f"봇을 통해 메시지 전달 완료: {TARGET_CHANNEL}")
+        
+        # 전달된 메시지 ID 저장 (중복 방지용)
+        forwarded_messages.add(message_key)
+        logger.debug(f"메시지 ID 저장됨: {message_key}")
+        
+        # 메모리 관리: 저장된 메시지 ID가 10000개를 초과하면 절반 제거
+        if len(forwarded_messages) > 10000:
+            # 가장 오래된 메시지 ID들을 제거 (set이므로 임의로 제거)
+            old_messages = list(forwarded_messages)[:5000]
+            for old_msg in old_messages:
+                forwarded_messages.discard(old_msg)
+            logger.info(f"메모리 최적화: 오래된 메시지 ID {len(old_messages)}개 제거됨")
         
     except Exception as e:
         logger.error(f"메시지 처리 중 오류 발생: {str(e)}")

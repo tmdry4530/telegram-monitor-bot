@@ -267,9 +267,9 @@ After=network.target
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/telegram-bot
-Environment=PATH=/home/ubuntu/telegram-bot/venv/bin
-ExecStart=/home/ubuntu/telegram-bot/venv/bin/python monitor.py
+WorkingDirectory=/home/ubuntu/telegram-monitor-bot
+Environment=PATH=/home/ubuntu/telegram-monitor-bot/venv/bin
+ExecStart=/home/ubuntu/telegram-monitor-bot/venv/bin/python monitor.py
 Restart=always
 RestartSec=10
 
@@ -282,13 +282,13 @@ WantedBy=multi-user.target
 ```bash
 # 서비스 등록
 sudo systemctl daemon-reload
-sudo systemctl enable telegram-monitor.service
+sudo systemctl enable telegram-monitor-bot.service
 
 # 서비스 시작
-sudo systemctl start telegram-monitor.service
+sudo systemctl start telegram-monitor-bot.service
 
 # 서비스 상태 확인
-sudo systemctl status telegram-monitor.service
+sudo systemctl status telegram-monitor-bot.service
 ```
 
 ---
