@@ -32,6 +32,12 @@ async def create_session():
     """
     사용자 입력을 받아 텔레그램 세션을 생성하고 .env 파일에 저장합니다.
     """
+    # 세션 파일 격리를 위한 디렉토리 생성
+    sessions_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions')
+    if not os.path.exists(sessions_dir):
+        os.makedirs(sessions_dir, mode=0o755)
+        logger.info(f"세션 디렉토리 생성: {sessions_dir}")
+    
     # .env 파일 로드 (존재하는 경우)
     if os.path.exists(ENV_FILE):
         load_dotenv(ENV_FILE)
@@ -86,9 +92,12 @@ async def create_session():
         logger.error("전화번호는 국가 코드(+)를 포함해야 합니다.")
         return False
     
+    # 세션 파일 경로 설정 (격리된 디렉토리)
+    session_path = os.path.join(sessions_dir, session_name)
+    
     # 텔레그램 클라이언트 생성 및 연결
     logger.info("텔레그램 서버에 연결 중...")
-    client = TelegramClient(session_name, api_id, api_hash)
+    client = TelegramClient(session_path, api_id, api_hash)
     
     try:
         await client.connect()
@@ -101,7 +110,7 @@ async def create_session():
             # .env 파일에 환경 변수 저장
             save_to_env(api_id, api_hash, phone_number, session_name)
             
-            logger.info(f"세션 파일이 '{session_name}.session'으로 저장되었습니다.")
+            logger.info(f"세션 파일이 '{session_path}.session'으로 저장되었습니다.")
             return True
         
         # 인증 코드 요청
@@ -128,7 +137,7 @@ async def create_session():
         # .env 파일에 환경 변수 저장
         save_to_env(api_id, api_hash, phone_number, session_name)
         
-        logger.info(f"세션 파일이 '{session_name}.session'으로 저장되었습니다.")
+        logger.info(f"세션 파일이 '{session_path}.session'으로 저장되었습니다.")
         return True
         
     except errors.PhoneNumberInvalidError:
