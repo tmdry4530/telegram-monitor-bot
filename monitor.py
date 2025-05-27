@@ -90,11 +90,20 @@ if EXCLUDE_KEYWORDS:
         if keyword:
             EXCLUDE_PATTERNS.append(re.compile(re.escape(keyword), re.IGNORECASE))
 
+# 세션 파일 격리를 위한 디렉토리 생성
+SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions')
+if not os.path.exists(SESSIONS_DIR):
+    os.makedirs(SESSIONS_DIR, mode=0o755)
+
+# 세션 파일 경로 설정 (격리된 디렉토리)
+USER_SESSION_PATH = os.path.join(SESSIONS_DIR, SESSION_NAME)
+BOT_SESSION_PATH = os.path.join(SESSIONS_DIR, 'bot_session')
+
 # 텔레그램 클라이언트 초기화 (사용자 세션)
-client = TelegramClient(SESSION_NAME, API_ID, API_HASH)
+client = TelegramClient(USER_SESSION_PATH, API_ID, API_HASH)
 
 # 봇 클라이언트 초기화 (메시지 전달용)
-bot_client = TelegramClient('bot_session', API_ID, API_HASH)
+bot_client = TelegramClient(BOT_SESSION_PATH, API_ID, API_HASH)
 
 # 전역 변수
 target_entity = None
@@ -483,11 +492,11 @@ async def main():
 
 if __name__ == "__main__":
     try:
-        # 세션 파일 확인
-        session_file = f"{SESSION_NAME}.session"
+        # 세션 파일 확인 (격리된 디렉토리에서)
+        session_file = f"{USER_SESSION_PATH}.session"
         if not os.path.exists(session_file):
             print(f"오류: 세션 파일({session_file})을 찾을 수 없습니다.")
-            print("setup_session.py를 먼저 실행하여 세션을 초기화하세요.")
+            print("fix_database_lock.py를 실행한 후 setup_session.py를 실행하여 세션을 초기화하세요.")
             sys.exit(1)
         
         # 비동기 함수 실행
