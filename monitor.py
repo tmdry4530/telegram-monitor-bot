@@ -192,7 +192,7 @@ def create_message_hash(text, chat_id):
 
 def is_duplicate_message(text, chat_id, message_id):
     """
-    중복 메시지인지 다중 검사
+    중복 메시지인지 확인 (기록 추가는 하지 않음)
     """
     global forwarded_messages, forwarded_content_hashes
     
@@ -213,30 +213,40 @@ def is_duplicate_message(text, chat_id, message_id):
         if time_diff < timedelta(minutes=5):
             logger.debug(f"내용 기반 중복 메시지 (시간차: {time_diff.total_seconds()}초): {content_hash[:8]}...")
             return True
-        else:
-            # 5분이 지났으면 해시 업데이트
-            forwarded_content_hashes[content_hash] = current_time
     
-    # 3. 중복이 아니면 기록 추가
+    return False
+
+def mark_message_as_forwarded(text, chat_id, message_id):
+    """
+    메시지를 전달됨으로 기록
+    """
+    global forwarded_messages, forwarded_content_hashes
+    
+    current_time = datetime.now()
+    
+    # 메시지 ID와 내용 해시 기록
+    message_key = (chat_id, message_id)
+    content_hash = create_message_hash(text, chat_id)
+    
     forwarded_messages.add(message_key)
     forwarded_content_hashes[content_hash] = current_time
     
-    # 4. 메모리 정리 (메시지 ID)
+    logger.debug(f"메시지 전달 기록 저장: ID={message_key}, Hash={content_hash[:8]}")
+    
+    # 메모리 정리 (메시지 ID)
     if len(forwarded_messages) > 10000:
         old_messages = list(forwarded_messages)[:5000]
         for old_msg in old_messages:
             forwarded_messages.discard(old_msg)
         logger.info(f"메모리 최적화: 오래된 메시지 ID {len(old_messages)}개 제거됨")
     
-    # 5. 메모리 정리 (내용 해시 - 1시간 이상 된 것)
+    # 메모리 정리 (내용 해시 - 1시간 이상 된 것)
     if len(forwarded_content_hashes) > 5000:
         cutoff_time = current_time - timedelta(hours=1)
         old_hashes = [h for h, t in forwarded_content_hashes.items() if t < cutoff_time]
         for old_hash in old_hashes:
             del forwarded_content_hashes[old_hash]
         logger.info(f"메모리 최적화: 오래된 내용 해시 {len(old_hashes)}개 제거됨")
-    
-    return False
 
 async def get_entity_name(entity):
     """
@@ -368,6 +378,9 @@ async def handler(event):
         await bot_client.send_message(bot_target_entity, event.message.text)
         logger.info(f"봇을 통해 메시지 전달 완료: {TARGET_CHANNEL}")
         
+        # 전달 성공 후 중복 방지를 위해 기록
+        mark_message_as_forwarded(event.message.text, chat.id, event.message.id)
+        
     except Exception as e:
         logger.error(f"메시지 처리 중 오류 발생: {str(e)}")
 
@@ -422,7 +435,7 @@ async def main():
                 logger.info(f"대상 채널: {TARGET_CHANNEL}")
                 logger.info("참고: 대상 채널에서 오는 메시지는 감지하지 않습니다.")
                 logger.info("메시지 전달: 봇을 통해 전달됩니다.")
-                logger.info("중복 방지: ID 기반 + 내용 기반 (5분) 다중 검사")
+                logger.info("중복 방지: 최초 키워드 메시지만 전달, 5분간 동일 내용 차단")
                 logger.info("Ctrl+C를 눌러 프로그램을 종료할 수 있습니다.")
                 
                 # 무한 실행
