@@ -5,7 +5,7 @@
 텔레그램 메시지 모니터링 및 자동 전달 프로그램
 - 모든 채널/그룹의 메시지 실시간 모니터링
 - "open.kakao.com" 키워드가 포함된 메시지 감지
-- [수정] 감지된 메시지를 '이미지/미디어'와 함께 지정된 대상 채널로 즉시 전달
+- [수정] 감지된 메시지를 '이미지/미디어/링크 미리보기'와 함께 지정된 대상 채널로 즉시 전달
 - 파일 기반 해시 DB를 사용하여 재시작 및 포워딩 시 중복 전달 방지
 """
 
@@ -282,7 +282,7 @@ async def resolve_bot_target_entity():
 async def handler(event):
     """모든 새 메시지를 처리하는 이벤트 핸들러"""
     try:
-        # 메시지 텍스트(캡션 포함)가 없으면 무시
+        # 메시지 텍스트(캡션 포함)가 없으면 키워드 검사 불가하므로 무시
         if not event.message.text:
             return
         
@@ -313,16 +313,11 @@ async def handler(event):
             return
         
         # --- [핵심 수정 사항] ---
-        # 미디어(이미지 등)가 있으면 함께 보내고, 없으면 텍스트만 보냄
-        await bot_client.send_message(
-            bot_target_entity,
-            message=event.message.text,
-            file=event.message.media
-        )
+        # 원본 메시지 객체를 통째로 전달하여 텍스트, 미디어, 링크 미리보기 등을 모두 올바르게 보냄
+        await bot_client.send_message(bot_target_entity, event.message)
         # ---
         
-        media_type = f" ({event.message.media.mime_type})" if event.message.media else ""
-        logger.info(f"봇을 통해 메시지{media_type} 전달 완료: {TARGET_CHANNEL}")
+        logger.info(f"봇을 통해 메시지 전달 완료: {TARGET_CHANNEL}")
         
         mark_message_as_forwarded(event.message.text)
         
