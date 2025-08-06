@@ -20,7 +20,7 @@
 ### 1.2 인스턴스 설정
 
 ```
-◾ 이름: telegram-monitor-bot
+◾ 이름: telegram-monitor
 ◾ OS: Ubuntu Server 22.04 LTS (프리티어 가능)
 ◾ 인스턴스 유형: t2.micro (프리티어)
 ◾ 키 페어: 새로 생성 또는 기존 사용
@@ -121,7 +121,7 @@ sudo apt upgrade -y
 
 ```bash
 # Python 3.11 설치
-sudo apt install python3.11 python3.11-venv python3-pip -y
+sudo apt install python3.12 python3.12-venv python3-pip -y
 
 # Git 설치
 sudo apt install git -y
@@ -142,8 +142,8 @@ cd ~/telegram-bot
 
 ```bash
 # GitHub 리포지토리가 있는 경우
-git clone https://github.com/yourusername/telegram-monitor-bot.git
-cd telegram-monitor-bot
+# (예시) git clone https://github.com/yourusername/coffee-bot-v2.git
+cd coffee-bot\ v2
 ```
 
 ### 4.2 방법 2: 파일 직접 업로드
@@ -152,7 +152,7 @@ cd telegram-monitor-bot
 
 ```powershell
 # 현재 프로젝트 폴더에서 실행
-scp -i "telegram-bot-key.pem" -r . ubuntu@[EC2 퍼블릭 IP]:~/telegram-bot/
+scp -i "telegram-bot-key.pem" -r . ubuntu@[EC2 퍼블릭 IP]:~/coffee-bot-v2/
 ```
 
 #### WinSCP 사용 (GUI)
@@ -173,7 +173,7 @@ scp -i "telegram-bot-key.pem" -r . ubuntu@[EC2 퍼블릭 IP]:~/telegram-bot/
 nano monitor.py
 # 내용을 복사 붙여넣기
 
-nano check_channels.py
+nano setup_session.py
 # 내용을 복사 붙여넣기
 
 nano requirements.txt
@@ -187,8 +187,8 @@ nano requirements.txt
 ### 5.1 Python 가상환경 생성
 
 ```bash
-cd ~/telegram-bot
-python3.11 -m venv venv
+cd ~/coffee-bot-v2
+python3 -m venv venv
 source venv/bin/activate
 ```
 
@@ -196,10 +196,8 @@ source venv/bin/activate
 
 ```bash
 # requirements.txt 생성 (없는 경우)
-cat > requirements.txt << EOF
-telethon>=1.34.0
-python-dotenv>=1.0.0
-EOF
+echo "telethon>=1.34.0
+python-dotenv>=1.0.0" > requirements.txt
 
 # 패키지 설치
 pip install -r requirements.txt
@@ -211,36 +209,34 @@ pip install -r requirements.txt
 nano .env
 ```
 
-`.env` 파일 내용:
+.env 파일 예시:
 
-```bash
-# 텔레그램 API 설정 (my.telegram.org에서 발급)
-API_ID=your_api_id
-API_HASH=your_api_hash
-PHONE_NUMBER=your_phone_number
+```
+# 텔레그램 API 인증 정보
+API_ID=29240486
+API_HASH=ebe20bb8a9310116cac2ffdef39cd904
+PHONE_NUMBER=+821090754530
 
 # 세션 설정
 SESSION_NAME=telegram_session
 
 # 대상 채널 설정
-TARGET_CHANNEL=-1002327474441
-
-# 봇 토큰 (BotFather에서 생성)
-BOT_TOKEN=your_bot_token
-
-# 제외 키워드 (쉼표로 구분)
-EXCLUDE_KEYWORDS=광고,스팸,홍보
+TARGET_CHANNEL=-1002158002807
 
 # 로깅 설정
 LOG_LEVEL=INFO
 LOG_FILE=telegram_monitor.log
+
+# (선택) 봇 토큰 및 제외 키워드 등
+BOT_TOKEN=7315190305:AAG36KFHWzfx1cobSk5VbC_CmfX4lM3W1nw
+EXCLUDE_KEYWORDS=골수이형성증후군,츄카피,오렌지왕조,Sign,펑크비즘,Hamilton,해밀턴,유후갱단,GRND,무벌스,MOVERSE,X-PASS,echo,PALIO,Palio,하양이아빠,XPLA,크몽,젬하다,ZOOMEX,코인한나,벨러,주멕스,ORBS,Orbs,마비아,틱톡,Fracatal,클레바,라임라잇,부업,뉴트론,티프로,WPG,맨틀,알렉스,CCGG,CHIWAT
 ```
 
 ### 5.4 세션 파일 생성
 
 ```bash
 # 세션 초기화 (최초 1회만)
-python3 monitor.py
+python3 setup_session.py
 ```
 
 - 전화번호 인증코드 입력
@@ -254,22 +250,22 @@ python3 monitor.py
 ### 6.1 systemd 서비스 파일 생성
 
 ```bash
-sudo nano /etc/systemd/system/telegram-monitor.service
+sudo nano /etc/systemd/system/coffee-bot-v2.service
 ```
 
-서비스 파일 내용:
+서비스 파일 내용 예시:
 
 ```ini
 [Unit]
-Description=Telegram Monitor Bot
+Description=Telegram Coffee Bot v2
 After=network.target
 
 [Service]
 Type=simple
 User=ubuntu
-WorkingDirectory=/home/ubuntu/telegram-monitor-bot
-Environment=PATH=/home/ubuntu/telegram-monitor-bot/venv/bin
-ExecStart=/home/ubuntu/telegram-monitor-bot/venv/bin/python monitor.py
+WorkingDirectory=/home/ubuntu/coffee-bot-v2
+Environment=PATH=/home/ubuntu/coffee-bot-v2/venv/bin
+ExecStart=/home/ubuntu/coffee-bot-v2/venv/bin/python monitor.py
 Restart=always
 RestartSec=10
 
@@ -282,13 +278,13 @@ WantedBy=multi-user.target
 ```bash
 # 서비스 등록
 sudo systemctl daemon-reload
-sudo systemctl enable telegram-monitor-bot.service
+sudo systemctl enable coffee-bot-v2.service
 
 # 서비스 시작
-sudo systemctl start telegram-monitor-bot.service
+sudo systemctl start coffee-bot-v2.service
 
 # 서비스 상태 확인
-sudo systemctl status telegram-monitor-bot.service
+sudo systemctl status coffee-bot-v2.service
 ```
 
 ---
