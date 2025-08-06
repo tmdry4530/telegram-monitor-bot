@@ -5,7 +5,7 @@
 텔레그램 메시지 모니터링 및 자동 전달 프로그램
 - 모든 채널/그룹의 메시지 실시간 모니터링
 - "open.kakao.com" 키워드가 포함된 메시지 감지
-- [수정] 감지된 메시지를 '이미지/미디어/링크 미리보기'와 함께 지정된 대상 채널로 즉시 전달
+- [수정] 다운로드 후 재업로드 방식으로 모든 종류의 미디어를 안정적으로 전달
 - 파일 기반 해시 DB를 사용하여 재시작 및 포워딩 시 중복 전달 방지
 """
 
@@ -263,21 +263,27 @@ async def handler(event):
             logger.error("봇용 대상 채널이 설정되지 않았습니다. 메시지를 전달할 수 없습니다.")
             return
 
-        # --- [핵심 수정 사항] ---
-        # 전송할 메시지 구성 요소를 준비합니다.
+        # --- [핵심 수정 사항: 다운로드 후 재업로드] ---
         message_to_send = event.message.text
         file_to_send = None
         
-        # 미디어가 있고, 그것이 '링크 미리보기'가 아닌 '실제 파일'인 경우에만 첨부합니다.
+        # 미디어가 있고, 그것이 '링크 미리보기'가 아닌 '실제 파일'인 경우에만 처리합니다.
         if event.message.media and not isinstance(event.message.media, MessageMediaWebPage):
-            file_to_send = event.message.media
-            
-        # 봇을 통해 메시지 구성 요소를 전송합니다.
+            logger.info("실제 미디어 파일 감지. 메모리로 다운로드를 시도합니다.")
+            try:
+                # 사용자 클라이언트로 미디어를 다운로드하여 봇 클라이언트가 사용할 수 있도록 컨텍스트를 분리합니다.
+                file_to_send = await client.download_media(event.message.media, file=bytes)
+                logger.info("미디어 다운로드 성공. 봇으로 전달 준비 완료.")
+            except Exception as e:
+                logger.error(f"미디어 다운로드 중 오류 발생: {e}. 텍스트만 전송합니다.")
+                file_to_send = None # 다운로드 실패 시 안전하게 파일 전송 포기
+
+        # 봇을 통해 최종 구성된 메시지를 전송합니다.
         await bot_client.send_message(
             bot_target_entity,
             message=message_to_send,
             file=file_to_send,
-            link_preview=True  # 링크가 있으면 봇이 스스로 미리보기를 생성하도록 허용
+            link_preview=True  # 텍스트에 링크가 있으면 봇이 스스로 미리보기를 생성하도록 허용
         )
         # ---
 
