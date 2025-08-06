@@ -5,7 +5,7 @@
 텔레그램 메시지 모니터링 및 자동 전달 프로그램
 - 모든 채널/그룹의 메시지 실시간 모니터링
 - "open.kakao.com" 키워드가 포함된 메시지 감지
-- [최종] 미디어 타입(사진/문서)을 식별하여 원본과 동일한 형태로 지능적으로 전달
+- [최종] 임시 파일 다운로드/삭제 방식으로 모든 미디어를 원본과 동일하게 안정적으로 전달
 - 파일 기반 해시 DB를 사용하여 재시작 및 포워딩 시 중복 전달 방지
 """
 
@@ -21,8 +21,7 @@ import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, errors
 from telethon.tl.types import (
-    PeerChannel, PeerChat, PeerUser, MessageMediaWebPage,
-    MessageMediaPhoto, MessageMediaDocument, DocumentAttributeImageSize, DocumentAttributeVideo
+    PeerChannel, PeerChat, PeerUser, MessageMediaWebPage
 )
 from dotenv import load_dotenv
 
@@ -124,10 +123,11 @@ def save_hashes_to_file():
     except IOError as e: logger.error(f"해시 DB 파일 저장 실패: {e}")
 
 def create_message_hash(text):
-    normalized_text = re.sub(r'\s+', ' ', text.strip() or "")
+    normalized_text = re.sub(r'\s+', ' ', text or "")
     return hashlib.md5(normalized_text.encode('utf-8')).hexdigest()
 
 def is_duplicate_message(text):
+    if not text: return False # 텍스트 없는 미디어는 중복 검사에서 제외
     content_hash = create_message_hash(text)
     if content_hash in forwarded_content_hashes:
         logger.info(f"내용 기반 중복 메시지 감지 (Hash: {content_hash[:8]}...). 전달 건너뜀.")
@@ -135,6 +135,7 @@ def is_duplicate_message(text):
     return False
 
 def mark_message_as_forwarded(text):
+    if not text: return
     content_hash = create_message_hash(text)
     forwarded_content_hashes[content_hash] = datetime.now()
     save_hashes_to_file()
@@ -161,19 +162,14 @@ async def resolve_target_entity(client_instance, purpose="대상"):
 @client.on(events.NewMessage())
 async def handler(event):
     """모든 새 메시지를 처리하는 이벤트 핸들러"""
+    temp_file_path = None
     try:
-        # 텍스트가 없는 메시지도 미디어와 함께 올 수 있으므로, 텍스트 유무로 조기 리턴하지 않음
         message_text = event.message.text or ""
-        
         chat = await event.get_chat()
+
         if target_entity and chat.id == target_entity.id: return
-        
-        # 키워드가 텍스트에만 있다고 가정 (미디어 캡션)
         if not KEYWORD_PATTERN.search(message_text): return
-        
-        # 중복 검사는 계속 텍스트(캡션) 기준으로 수행
         if is_duplicate_message(message_text): return
-        
         if any(p.search(message_text) for p in EXCLUDE_PATTERNS):
             logger.info("제외 키워드가 감지되어 메시지 전달을 건너뜁니다.")
             return
@@ -189,37 +185,27 @@ async def handler(event):
             logger.error("봇용 대상 채널이 설정되지 않았습니다. 메시지를 전달할 수 없습니다.")
             return
 
-        # --- [핵심 수정 사항: 미디어 타입에 따른 지능적 처리] ---
+        # --- [핵심 수정 사항: 임시 파일 다운로드/삭제 방식] ---
         file_to_send = None
-        send_kwargs = {'link_preview': True}
-
+        
         if event.message.media and not isinstance(event.message.media, MessageMediaWebPage):
-            logger.info("실제 미디어 파일 감지. 다운로드 및 전송 전략 설정을 시도합니다.")
+            logger.info("실제 미디어 파일 감지. 임시 파일로 다운로드를 시도합니다.")
             try:
-                file_to_send = await client.download_media(event.message.media, file=bytes)
-
-                if isinstance(event.message.media, MessageMediaPhoto):
-                    # 타입이 '사진'일 경우, '사진'으로 보이도록 강제
-                    send_kwargs['force_document'] = False
-                    logger.info("미디어 타입: 사진. 이미지로 전송하도록 설정합니다.")
-                
-                elif isinstance(event.message.media, MessageMediaDocument):
-                    # 타입이 '문서'일 경우, 원본 속성을 보존하여 전송
-                    send_kwargs['attributes'] = event.message.media.document.attributes
-                    # 문서라도 이미지/비디오인 경우 '사진/영상'으로 보이도록 유도
-                    is_visual = any(isinstance(attr, (DocumentAttributeImageSize, DocumentAttributeVideo)) for attr in send_kwargs['attributes'])
-                    send_kwargs['force_document'] = not is_visual
-                    logger.info(f"미디어 타입: 문서. 원본 속성으로 전송합니다. (force_document={send_kwargs['force_document']})")
-
+                # 1. 서버 디스크의 임시 위치로 파일을 다운로드합니다.
+                #    Telethon이 파일명을 포함하여 저장합니다.
+                temp_file_path = await client.download_media(event.message, file=os.path.join('/tmp', ''))
+                file_to_send = temp_file_path
+                logger.info(f"미디어 다운로드 성공: {temp_file_path}")
             except Exception as e:
-                logger.error(f"미디어 처리 중 오류 발생: {e}. 텍스트만 전송합니다.")
+                logger.error(f"미디어 다운로드 중 오류 발생: {e}. 텍스트만 전송합니다.")
                 file_to_send = None
 
+        # 2. 메시지를 전송합니다. file 인자에 파일 경로를 넘겨줍니다.
         await bot_client.send_message(
             bot_target_entity,
             message=message_text,
             file=file_to_send,
-            **send_kwargs
+            link_preview=True
         )
         # ---
 
@@ -228,6 +214,14 @@ async def handler(event):
         
     except Exception as e:
         logger.error(f"메시지 처리 중 심각한 오류 발생: {str(e)}")
+    finally:
+        # 3. 전송 성공/실패 여부와 관계없이 임시 파일을 반드시 삭제합니다.
+        if temp_file_path and os.path.exists(temp_file_path):
+            try:
+                os.remove(temp_file_path)
+                logger.info(f"임시 파일 삭제 완료: {temp_file_path}")
+            except Exception as e:
+                logger.error(f"임시 파일 삭제 실패: {e}")
 
 async def main():
     global target_entity, bot_target_entity
