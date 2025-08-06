@@ -5,7 +5,7 @@
 텔레그램 메시지 모니터링 및 자동 전달 프로그램
 - 모든 채널/그룹의 메시지 실시간 모니터링
 - "open.kakao.com" 키워드가 포함된 메시지 감지
-- [최종] 다운로드 후 '원본 속성'과 함께 재업로드하여 모든 미디어를 원본과 동일하게 전달
+- [최종] 미디어 타입(사진/문서)을 식별하여 원본과 동일한 형태로 지능적으로 전달
 - 파일 기반 해시 DB를 사용하여 재시작 및 포워딩 시 중복 전달 방지
 """
 
@@ -20,7 +20,10 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import PeerChannel, PeerChat, PeerUser, MessageMediaWebPage, MessageMediaDocument, MessageMediaPhoto
+from telethon.tl.types import (
+    PeerChannel, PeerChat, PeerUser, MessageMediaWebPage,
+    MessageMediaPhoto, MessageMediaDocument, DocumentAttributeImageSize, DocumentAttributeVideo
+)
 from dotenv import load_dotenv
 
 # .env 파일 로드
@@ -43,75 +46,41 @@ LOG_LEVEL = os.getenv('LOG_LEVEL', 'INFO')
 LOG_FILE = os.getenv('LOG_FILE', 'telegram_monitor.log')
 
 # 환경 변수 검증
-if not API_ID or not API_HASH or not PHONE_NUMBER:
-    print("오류: API_ID, API_HASH, PHONE_NUMBER 환경 변수가 필요합니다.")
-    print("setup_session.py를 실행하여 .env 파일을 설정하세요.")
-    sys.exit(1)
-
-if not BOT_TOKEN:
-    print("오류: BOT_TOKEN 환경 변수가 필요합니다.")
-    print(".env 파일에 BOT_TOKEN을 추가하세요.")
+if not all([API_ID, API_HASH, PHONE_NUMBER, BOT_TOKEN]):
+    print("오류: API_ID, API_HASH, PHONE_NUMBER, BOT_TOKEN 환경 변수가 모두 필요합니다.")
     sys.exit(1)
 
 try:
     API_ID = int(API_ID)
 except ValueError:
-    print("오류: API_ID는 숫자여야 합니다.")
-    sys.exit(1)
+    print("오류: API_ID는 숫자여야 합니다."); sys.exit(1)
 
 # 로깅 설정
 log_level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
-
 if sys.platform == "win32":
-    import locale
-    try:
-        os.system("chcp 65001 > nul")
-    except:
-        pass
-
-logging.basicConfig(
-    level=log_level,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding='utf-8'),
-        logging.StreamHandler(sys.stdout)
-    ]
-)
+    try: os.system("chcp 65001 > nul")
+    except: pass
+logging.basicConfig(level=log_level, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[logging.FileHandler(LOG_FILE, encoding='utf-8'), logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
 
-# --- 중복 방지 로직 (파일 기반) ---
+# --- 전역 변수 ---
 HASH_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forwarded_hashes.json')
 forwarded_content_hashes = {}
-# ---
-
-# 키워드 패턴
 KEYWORD_PATTERN = re.compile(r'open\.kakao\.com', re.IGNORECASE)
-
-# 제외 키워드 패턴
 EXCLUDE_PATTERNS = [re.compile(re.escape(k.strip()), re.IGNORECASE) for k in EXCLUDE_KEYWORDS if k.strip()]
-
-# 세션 디렉토리 생성
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions')
 os.makedirs(SESSIONS_DIR, mode=0o755, exist_ok=True)
-
-# 세션 파일 경로 설정
 USER_SESSION_PATH = os.path.join(SESSIONS_DIR, SESSION_NAME)
 BOT_SESSION_PATH = os.path.join(SESSIONS_DIR, 'bot_session')
-
-# 텔레그램 클라이언트 초기화
 client = TelegramClient(USER_SESSION_PATH, API_ID, API_HASH)
 bot_client = TelegramClient(BOT_SESSION_PATH, API_ID, API_HASH)
-
-# 전역 변수
 target_entity = None
 bot_target_entity = None
-
-# 재연결 설정
 MAX_RETRIES = 5
 RETRY_DELAY = 30
-
-# 프로세스 잠금 파일
 LOCK_FILE = 'monitor.lock'
+# ---
 
 class SingleInstanceLock:
     def __init__(self, lock_file): self.lock_file = lock_file; self.lock_acquired = False
@@ -155,7 +124,7 @@ def save_hashes_to_file():
     except IOError as e: logger.error(f"해시 DB 파일 저장 실패: {e}")
 
 def create_message_hash(text):
-    normalized_text = re.sub(r'\s+', ' ', text.strip())
+    normalized_text = re.sub(r'\s+', ' ', text.strip() or "")
     return hashlib.md5(normalized_text.encode('utf-8')).hexdigest()
 
 def is_duplicate_message(text):
@@ -193,12 +162,19 @@ async def resolve_target_entity(client_instance, purpose="대상"):
 async def handler(event):
     """모든 새 메시지를 처리하는 이벤트 핸들러"""
     try:
-        if not event.message.text: return
+        # 텍스트가 없는 메시지도 미디어와 함께 올 수 있으므로, 텍스트 유무로 조기 리턴하지 않음
+        message_text = event.message.text or ""
+        
         chat = await event.get_chat()
         if target_entity and chat.id == target_entity.id: return
-        if is_duplicate_message(event.message.text): return
-        if not KEYWORD_PATTERN.search(event.message.text): return
-        if any(p.search(event.message.text) for p in EXCLUDE_PATTERNS):
+        
+        # 키워드가 텍스트에만 있다고 가정 (미디어 캡션)
+        if not KEYWORD_PATTERN.search(message_text): return
+        
+        # 중복 검사는 계속 텍스트(캡션) 기준으로 수행
+        if is_duplicate_message(message_text): return
+        
+        if any(p.search(message_text) for p in EXCLUDE_PATTERNS):
             logger.info("제외 키워드가 감지되어 메시지 전달을 건너뜁니다.")
             return
         
@@ -207,50 +183,51 @@ async def handler(event):
         sender_name = await get_entity_name(sender)
         
         logger.info(f"키워드 감지: {chat_name} / {sender_name}")
-        logger.info(f"메시지 내용: {event.message.text[:100]}...")
+        logger.info(f"메시지 내용: {message_text[:100]}...")
         
         if not bot_target_entity:
             logger.error("봇용 대상 채널이 설정되지 않았습니다. 메시지를 전달할 수 없습니다.")
             return
 
-        # --- [핵심 수정 사항: 다운로드 + 속성 추출 후 재업로드] ---
-        message_to_send = event.message.text
+        # --- [핵심 수정 사항: 미디어 타입에 따른 지능적 처리] ---
         file_to_send = None
-        attributes_to_send = None
-        
-        # 미디어가 있고, '링크 미리보기'가 아닌 경우에만 처리
+        send_kwargs = {'link_preview': True}
+
         if event.message.media and not isinstance(event.message.media, MessageMediaWebPage):
-            logger.info("실제 미디어 파일 감지. 다운로드 및 속성 추출을 시도합니다.")
+            logger.info("실제 미디어 파일 감지. 다운로드 및 전송 전략 설정을 시도합니다.")
             try:
-                # 1. 사용자 클라이언트로 미디어 데이터 다운로드
                 file_to_send = await client.download_media(event.message.media, file=bytes)
+
+                if isinstance(event.message.media, MessageMediaPhoto):
+                    # 타입이 '사진'일 경우, '사진'으로 보이도록 강제
+                    send_kwargs['force_document'] = False
+                    logger.info("미디어 타입: 사진. 이미지로 전송하도록 설정합니다.")
                 
-                # 2. 원본 미디어의 속성(파일명 등) 추출
-                if hasattr(event.message.media, 'document') and hasattr(event.message.media.document, 'attributes'):
-                    attributes_to_send = event.message.media.document.attributes
-                
-                logger.info("미디어 다운로드 및 속성 추출 성공. 봇으로 전달 준비 완료.")
+                elif isinstance(event.message.media, MessageMediaDocument):
+                    # 타입이 '문서'일 경우, 원본 속성을 보존하여 전송
+                    send_kwargs['attributes'] = event.message.media.document.attributes
+                    # 문서라도 이미지/비디오인 경우 '사진/영상'으로 보이도록 유도
+                    is_visual = any(isinstance(attr, (DocumentAttributeImageSize, DocumentAttributeVideo)) for attr in send_kwargs['attributes'])
+                    send_kwargs['force_document'] = not is_visual
+                    logger.info(f"미디어 타입: 문서. 원본 속성으로 전송합니다. (force_document={send_kwargs['force_document']})")
+
             except Exception as e:
                 logger.error(f"미디어 처리 중 오류 발생: {e}. 텍스트만 전송합니다.")
                 file_to_send = None
-                attributes_to_send = None
 
-        # 3. 봇을 통해 최종 구성된 메시지를 전송
         await bot_client.send_message(
             bot_target_entity,
-            message=message_to_send,
+            message=message_text,
             file=file_to_send,
-            attributes=attributes_to_send, # 추출한 속성을 함께 전달
-            force_document=False,           # 텔레그램이 이미지/영상으로 똑똑하게 처리하도록 유도
-            link_preview=True               # 텍스트에 링크가 있으면 봇이 스스로 미리보기를 생성
+            **send_kwargs
         )
         # ---
 
         logger.info(f"봇을 통해 메시지 전달 완료: {TARGET_CHANNEL}")
-        mark_message_as_forwarded(event.message.text)
+        mark_message_as_forwarded(message_text)
         
     except Exception as e:
-        logger.error(f"메시지 처리 중 오류 발생: {str(e)}")
+        logger.error(f"메시지 처리 중 심각한 오류 발생: {str(e)}")
 
 async def main():
     global target_entity, bot_target_entity
