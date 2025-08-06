@@ -20,7 +20,7 @@ import hashlib
 import json
 from datetime import datetime, timedelta
 from telethon import TelegramClient, events, errors
-from telethon.tl.types import PeerChannel, PeerChat, PeerUser
+from telethon.tl.types import PeerChannel, PeerChat, PeerUser, MessageMediaWebPage
 from dotenv import load_dotenv
 
 # .env 파일 로드
@@ -62,7 +62,6 @@ except ValueError:
 # 로깅 설정
 log_level = getattr(logging, LOG_LEVEL.upper(), logging.INFO)
 
-# Windows 콘솔 UTF-8 설정
 if sys.platform == "win32":
     import locale
     try:
@@ -85,21 +84,15 @@ HASH_DB_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'forward
 forwarded_content_hashes = {}
 # ---
 
-# 키워드 패턴 (대소문자 구분 없이)
+# 키워드 패턴
 KEYWORD_PATTERN = re.compile(r'open\.kakao\.com', re.IGNORECASE)
 
-# 제외 키워드 패턴 생성
-EXCLUDE_PATTERNS = []
-if EXCLUDE_KEYWORDS:
-    for keyword in EXCLUDE_KEYWORDS:
-        keyword = keyword.strip()
-        if keyword:
-            EXCLUDE_PATTERNS.append(re.compile(re.escape(keyword), re.IGNORECASE))
+# 제외 키워드 패턴
+EXCLUDE_PATTERNS = [re.compile(re.escape(k.strip()), re.IGNORECASE) for k in EXCLUDE_KEYWORDS if k.strip()]
 
-# 세션 파일 격리를 위한 디렉토리 생성
+# 세션 디렉토리 생성
 SESSIONS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'sessions')
-if not os.path.exists(SESSIONS_DIR):
-    os.makedirs(SESSIONS_DIR, mode=0o755)
+os.makedirs(SESSIONS_DIR, mode=0o755, exist_ok=True)
 
 # 세션 파일 경로 설정
 USER_SESSION_PATH = os.path.join(SESSIONS_DIR, SESSION_NAME)
@@ -152,7 +145,6 @@ class SingleInstanceLock:
             atexit.register(self.release)
             logger.info(f"프로세스 잠금 획득됨 (PID: {os.getpid()})")
             return True
-            
         except Exception as e:
             logger.error(f"프로세스 잠금 획득 실패: {str(e)}")
             return False
@@ -170,32 +162,27 @@ class SingleInstanceLock:
         self.release()
 
 def load_hashes_from_file():
-    """파일에서 전달된 메시지 해시 목록을 불러오고 오래된 기록(24시간)을 정리합니다."""
+    """파일에서 해시 목록을 불러오고 오래된 기록(24시간)을 정리합니다."""
     global forwarded_content_hashes
     try:
         if os.path.exists(HASH_DB_FILE):
             with open(HASH_DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
-
             cutoff_time = datetime.now() - timedelta(hours=24)
             cleaned_hashes = {h: datetime.fromisoformat(ts_str) for h, ts_str in data.items() if datetime.fromisoformat(ts_str) > cutoff_time}
-
             forwarded_content_hashes = cleaned_hashes
-            logger.info(f"해시 DB 로드 완료: {len(forwarded_content_hashes)}개의 기록을 불러왔습니다.")
-            
+            logger.info(f"해시 DB 로드: {len(cleaned_hashes)}개 기록 불러옴 (만료된 {len(data) - len(cleaned_hashes)}개 정리)")
             if len(data) != len(cleaned_hashes):
-                logger.info(f"오래된 해시 기록 {len(data) - len(cleaned_hashes)}개를 정리했습니다.")
                 save_hashes_to_file()
         else:
-            logger.info("해시 DB 파일이 존재하지 않아 새로 시작합니다.")
+            logger.info("해시 DB 파일이 없어 새로 시작합니다.")
             forwarded_content_hashes = {}
-
     except Exception as e:
-        logger.error(f"해시 DB 파일 로드/처리 실패: {e}. 새 DB로 시작합니다.")
+        logger.error(f"해시 DB 파일 로드 실패: {e}. 새 DB로 시작합니다.")
         forwarded_content_hashes = {}
 
 def save_hashes_to_file():
-    """현재 메시지 해시 목록을 파일에 저장합니다."""
+    """메시지 해시 목록을 파일에 저장합니다."""
     data_to_save = {h: dt.isoformat() for h, dt in forwarded_content_hashes.items()}
     try:
         with open(HASH_DB_FILE, 'w', encoding='utf-8') as f:
@@ -204,102 +191,66 @@ def save_hashes_to_file():
         logger.error(f"해시 DB 파일 저장 실패: {e}")
 
 def create_message_hash(text):
-    """메시지 텍스트(캡션 포함)를 기반으로 고유 해시를 생성합니다."""
+    """메시지 텍스트 기반으로 고유 해시를 생성합니다."""
     normalized_text = re.sub(r'\s+', ' ', text.strip())
-    hash_input = normalized_text.encode('utf-8')
-    return hashlib.md5(hash_input).hexdigest()
+    return hashlib.md5(normalized_text.encode('utf-8')).hexdigest()
 
 def is_duplicate_message(text):
-    """내용 기반 해시를 사용하여 중복 메시지인지 확인합니다."""
-    global forwarded_content_hashes
+    """내용 기반 해시로 중복 메시지인지 확인합니다."""
     content_hash = create_message_hash(text)
     if content_hash in forwarded_content_hashes:
-        logger.info(f"내용 기반 중복 메시지 감지 (Hash: {content_hash[:8]}...). 전달을 건너뜁니다.")
+        logger.info(f"내용 기반 중복 메시지 감지 (Hash: {content_hash[:8]}...). 전달 건너뜀.")
         return True
     return False
 
 def mark_message_as_forwarded(text):
-    """메시지를 전달됨으로 기록하고 파일에 즉시 저장합니다."""
-    global forwarded_content_hashes
+    """메시지를 전달됨으로 기록하고 파일에 저장합니다."""
     content_hash = create_message_hash(text)
     forwarded_content_hashes[content_hash] = datetime.now()
     save_hashes_to_file()
-    logger.debug(f"메시지 전달 기록 저장 및 파일 업데이트 완료: Hash={content_hash[:8]}")
+    logger.debug(f"메시지 전달 기록 저장 (Hash={content_hash[:8]})")
 
 async def get_entity_name(entity):
-    """엔티티의 이름을 반환합니다."""
+    """엔티티 이름을 반환합니다."""
     try:
-        if hasattr(entity, 'title'):
-            name = entity.title
-        elif hasattr(entity, 'first_name'):
-            name = f"{entity.first_name} {entity.last_name or ''}".strip()
-        elif hasattr(entity, 'username'):
-            name = f"@{entity.username}"
-        else:
-            name = str(entity.id)
-        return name.encode('utf-8', errors='replace').decode('utf-8')
-    except Exception as e:
-        logger.error(f"엔티티 이름 가져오기 오류: {str(e)}")
-        return "알 수 없음"
+        if hasattr(entity, 'title'): return entity.title
+        if hasattr(entity, 'first_name'): return f"{entity.first_name} {entity.last_name or ''}".strip()
+        if hasattr(entity, 'username'): return f"@{entity.username}"
+        return str(entity.id)
+    except Exception: return "알 수 없음"
 
-async def resolve_target_entity():
+async def resolve_target_entity(client_instance, purpose="대상"):
     """대상 채널 엔티티를 해석합니다."""
     try:
         if TARGET_CHANNEL.lstrip('-').isdigit():
-            entity = await client.get_entity(int(TARGET_CHANNEL))
+            entity = await client_instance.get_entity(int(TARGET_CHANNEL))
         elif TARGET_CHANNEL.lower() == 'me':
-            entity = await client.get_me()
+            entity = await client_instance.get_me()
         else:
-            entity = await client.get_entity(TARGET_CHANNEL)
-        
+            entity = await client_instance.get_entity(TARGET_CHANNEL)
         name = await get_entity_name(entity)
-        logger.info(f"대상 채널 설정: {name}")
+        logger.info(f"{purpose} 채널 설정: {name}")
         return entity
     except Exception as e:
-        logger.error(f"대상 채널 해석 오류: {e}")
-        logger.error("임시로 대상 채널을 자기 자신으로 설정합니다.")
-        return await client.get_me()
-
-async def resolve_bot_target_entity():
-    """봇 클라이언트용 대상 채널 엔티티를 해석합니다."""
-    try:
-        if TARGET_CHANNEL.lstrip('-').isdigit():
-            entity = await bot_client.get_entity(int(TARGET_CHANNEL))
-        elif TARGET_CHANNEL.lower() == 'me':
-            entity = await bot_client.get_me()
-        else:
-            entity = await bot_client.get_entity(TARGET_CHANNEL)
-        
-        name = await get_entity_name(entity)
-        logger.info(f"봇용 대상 채널 설정: {name}")
-        return entity
-    except Exception as e:
-        logger.error(f"봇용 대상 채널 해석 오류: {e}")
-        logger.error("해결 방법: 봇을 해당 채널에 관리자로 추가하고 메시지 전송 권한을 부여하세요.")
+        logger.error(f"{purpose} 채널 '{TARGET_CHANNEL}' 해석 오류: {e}")
         return None
 
 @client.on(events.NewMessage())
 async def handler(event):
     """모든 새 메시지를 처리하는 이벤트 핸들러"""
     try:
-        # 메시지 텍스트(캡션 포함)가 없으면 키워드 검사 불가하므로 무시
-        if not event.message.text:
-            return
+        if not event.message.text: return
         
         chat = await event.get_chat()
-        if target_entity and chat.id == target_entity.id:
-            return
+        if target_entity and chat.id == target_entity.id: return
         
-        if is_duplicate_message(event.message.text):
-            return
+        if is_duplicate_message(event.message.text): return
         
-        if not KEYWORD_PATTERN.search(event.message.text):
-            return
+        if not KEYWORD_PATTERN.search(event.message.text): return
         
-        for exclude_pattern in EXCLUDE_PATTERNS:
-            if exclude_pattern.search(event.message.text):
-                logger.info(f"제외 키워드 감지되어 메시지 전달을 건너뜁니다: {exclude_pattern.pattern}")
-                return
+        if any(p.search(event.message.text) for p in EXCLUDE_PATTERNS):
+            logger.info("제외 키워드가 감지되어 메시지 전달을 건너뜁니다.")
+            return
         
         sender = await event.get_sender()
         chat_name = await get_entity_name(chat)
@@ -309,16 +260,28 @@ async def handler(event):
         logger.info(f"메시지 내용: {event.message.text[:100]}...")
         
         if not bot_target_entity:
-            logger.error("봇용 대상 채널이 설정되지 않았습니다.")
+            logger.error("봇용 대상 채널이 설정되지 않았습니다. 메시지를 전달할 수 없습니다.")
             return
-        
+
         # --- [핵심 수정 사항] ---
-        # 원본 메시지 객체를 통째로 전달하여 텍스트, 미디어, 링크 미리보기 등을 모두 올바르게 보냄
-        await bot_client.send_message(bot_target_entity, event.message)
+        # 전송할 메시지 구성 요소를 준비합니다.
+        message_to_send = event.message.text
+        file_to_send = None
+        
+        # 미디어가 있고, 그것이 '링크 미리보기'가 아닌 '실제 파일'인 경우에만 첨부합니다.
+        if event.message.media and not isinstance(event.message.media, MessageMediaWebPage):
+            file_to_send = event.message.media
+            
+        # 봇을 통해 메시지 구성 요소를 전송합니다.
+        await bot_client.send_message(
+            bot_target_entity,
+            message=message_to_send,
+            file=file_to_send,
+            link_preview=True  # 링크가 있으면 봇이 스스로 미리보기를 생성하도록 허용
+        )
         # ---
-        
+
         logger.info(f"봇을 통해 메시지 전달 완료: {TARGET_CHANNEL}")
-        
         mark_message_as_forwarded(event.message.text)
         
     except Exception as e:
@@ -329,8 +292,7 @@ async def main():
     global target_entity, bot_target_entity
     
     lock = SingleInstanceLock(LOCK_FILE)
-    if not lock.acquire():
-        return
+    if not lock.acquire(): return
         
     load_hashes_from_file()
     
@@ -339,26 +301,21 @@ async def main():
         while retry_count < MAX_RETRIES:
             try:
                 await client.start()
+                logger.info(f"사용자 로그인 성공: {await get_entity_name(await client.get_me())}")
+
                 await bot_client.start(bot_token=BOT_TOKEN)
+                logger.info(f"봇 로그인 성공: {await get_entity_name(await bot_client.get_me())}")
                 
-                me = await client.get_me()
-                logger.info(f"사용자 로그인 성공: {me.first_name} ({me.username})")
-                
-                bot_me = await bot_client.get_me()
-                logger.info(f"봇 로그인 성공: {bot_me.first_name} (@{bot_me.username})")
-                
-                target_entity = await resolve_target_entity()
-                bot_target_entity = await resolve_bot_target_entity()
+                target_entity = await resolve_target_entity(client, purpose="사용자용 대상")
+                bot_target_entity = await resolve_target_entity(bot_client, purpose="봇용 대상")
                 
                 if not bot_target_entity:
                     logger.error("봇이 대상 채널에 접근할 수 없습니다. 프로그램을 종료합니다.")
                     return
                 
-                logger.info("모니터링 시작...")
-                logger.info("Ctrl+C를 눌러 프로그램을 종료할 수 있습니다.")
-                
+                logger.info("모니터링 시작... (Ctrl+C를 눌러 종료)")
                 await client.run_until_disconnected()
-                return
+                return # 정상 종료
                 
             except (errors.PhoneNumberInvalidError, errors.ApiIdInvalidError, 
                     errors.AuthKeyUnregisteredError, errors.SessionPasswordNeededError) as e:
@@ -367,33 +324,29 @@ async def main():
             except (errors.ServerError, errors.FloodWaitError, ConnectionError) as e:
                 retry_count += 1
                 wait_time = RETRY_DELAY * retry_count
-                logger.error(f"연결 오류: {str(e)}")
-                logger.info(f"재연결 시도 {retry_count}/{MAX_RETRIES} ({wait_time}초 후)")
+                logger.error(f"연결 오류: {e} ({retry_count}/{MAX_RETRIES})")
+                logger.info(f"{wait_time}초 후 재연결합니다.")
                 await asyncio.sleep(wait_time)
             except Exception as e:
-                logger.error(f"예기치 않은 오류: {str(e)}")
+                logger.error(f"예기치 않은 오류: {e}")
                 return
     
         if retry_count >= MAX_RETRIES:
             logger.error(f"최대 재시도 횟수({MAX_RETRIES})를 초과했습니다.")
     
     finally:
-        if client.is_connected():
-            await client.disconnect()
-        if bot_client.is_connected():
-            await bot_client.disconnect()
+        if client.is_connected(): await client.disconnect()
+        if bot_client.is_connected(): await bot_client.disconnect()
         lock.release()
 
 if __name__ == "__main__":
     try:
         session_file = f"{USER_SESSION_PATH}.session"
         if not os.path.exists(session_file):
-            print(f"오류: 세션 파일({session_file})을 찾을 수 없습니다.")
-            print("setup_session.py를 실행하여 세션을 초기화하세요.")
+            print(f"오류: 세션 파일({session_file})을 찾을 수 없습니다. setup_session.py를 실행하세요.")
             sys.exit(1)
-        
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n프로그램이 사용자에 의해 중단되었습니다.")
+        print("\n프로그램이 중단되었습니다.")
     except Exception as e:
-        print(f"\n최상위 레벨에서 예기치 않은 오류가 발생했습니다: {str(e)}")
+        print(f"\n최상위 레벨 오류 발생: {e}")
